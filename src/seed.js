@@ -28,6 +28,10 @@ function seed(db) {
   `);
   const link = db.prepare('INSERT INTO slot_artworks (slot_id, artwork_id) VALUES (?, ?)');
   const addLinks = (slotId, ids) => ids.forEach((aid) => link.run(slotId, aid));
+  const insSeg = db.prepare(`
+    INSERT INTO slot_segments (slot_id, seg_index, seg_start, seg_end, lux, exposure)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
 
   // 1. 已结束时段（实际曝光已补记并替换预占）：160 分钟 * 140 = 22400
   const s1 = insSlot.run({
@@ -37,6 +41,8 @@ function seed(db) {
     actual_exposure: 22400,
   }).lastInsertRowid;
   addLinks(s1, [artIds.w1]);
+  // 单照度结算的分段（160 分钟 * 140 = 22400）
+  insSeg.run(s1, 1, '2026-09-29T09:10', '2026-09-29T11:50', 140, 22400);
 
   // 2. 进行中时段：已开始，原排期冻结、预占保留（240 分钟 * 200 = 48000/件）
   const s2 = insSlot.run({

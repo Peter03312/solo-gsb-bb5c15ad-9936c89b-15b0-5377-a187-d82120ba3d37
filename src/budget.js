@@ -47,15 +47,54 @@ function loadArtworks(db) {
 function loadSlots(db) {
   const slots = db.prepare('SELECT * FROM slots ORDER BY planned_start, seq, id').all();
   const links = db.prepare('SELECT * FROM slot_artworks').all();
+  const segs = db.prepare('SELECT * FROM slot_segments ORDER BY slot_id, seg_index, id').all();
+  const corrections = db.prepare('SELECT * FROM slot_corrections ORDER BY slot_id, id').all();
   const bySlot = new Map();
   for (const l of links) {
     if (!bySlot.has(l.slot_id)) bySlot.set(l.slot_id, []);
     bySlot.get(l.slot_id).push(l.artwork_id);
   }
+  const segBySlot = new Map();
+  for (const g of segs) {
+    if (!segBySlot.has(g.slot_id)) segBySlot.set(g.slot_id, []);
+    segBySlot.get(g.slot_id).push(g);
+  }
+  const corrBySlot = new Map();
+  for (const c of corrections) {
+    if (!corrBySlot.has(c.slot_id)) corrBySlot.set(c.slot_id, []);
+    corrBySlot.get(c.slot_id).push(c);
+  }
   for (const s of slots) {
     s.artworkIds = (bySlot.get(s.id) || []).slice();
+    s.segments = (segBySlot.get(s.id) || []).map((g) => ({
+      index: g.seg_index,
+      start: g.seg_start,
+      end: g.seg_end,
+      lux: g.lux,
+      minutes: minutesBetween(g.seg_start, g.seg_end),
+      exposure: g.exposure,
+    }));
+    s.corrections = (corrBySlot.get(s.id) || []).map(correctionDto);
   }
   return slots;
+}
+
+function correctionDto(c) {
+  const parse = (t) => { try { return JSON.parse(t); } catch { return []; } };
+  return {
+    id: c.id,
+    reason: c.reason,
+    before: {
+      start: c.before_start, end: c.before_end, lux: c.before_lux,
+      exposure: c.before_exposure, segments: parse(c.before_segments_json),
+    },
+    after: {
+      start: c.after_start, end: c.after_end, lux: c.after_lux,
+      exposure: c.after_exposure, segments: parse(c.after_segments_json),
+    },
+    version: c.version_after,
+    createdAt: c.created_at,
+  };
 }
 
 function plannedExposure(slot) {
@@ -71,9 +110,31 @@ function actualExposure(slot) {
   return round3(mins * slot.actual_lux);
 }
 
+// 有效分段：优先读取 slot_segments；旧库已结束时段若尚无分段行，
+// 按其单照度（actualStart/End/actualLux）合成一段用于展示与更正快照。
+function effectiveSegments(slot) {
+  if (Array.isArray(slot.segments) && slot.segments.length) return slot.segments;
+  if (slot.actual_start != null && slot.actual_end != null && slot.actual_lux != null) {
+    const mins = minutesBetween(slot.actual_start, slot.actual_end);
+    if (mins !== null && mins >= 0) {
+      return [{
+        index: 1, start: slot.actual_start, end: slot.actual_end,
+        lux: slot.actual_lux, minutes: mins, exposure: round3(mins * slot.actual_lux),
+      }];
+    }
+  }
+  return [];
+}
+
+function segmentsExposure(segments) {
+  return round3(segments.reduce((sum, g) => sum + (g.exposure || 0), 0));
+}
+
 function slotDto(slot, artworksById) {
   const planned = plannedExposure(slot);
   const actual = slot.status === 'finished' ? slot.actual_exposure : actualExposure(slot);
+  const segments = effectiveSegments(slot);
+  const multiSegment = segments.length > 1;
   let blockedReason = null;
   try { blockedReason = JSON.parse(slot.blocked_reason || '{}'); } catch { blockedReason = {}; }
   return {
@@ -88,9 +149,12 @@ function slotDto(slot, artworksById) {
     plannedExposure: planned,
     actualStart: slot.actual_start,
     actualEnd: slot.actual_end,
-    actualLux: slot.actual_lux,
+    // 单段结算时返回该段照度；多段结算时为 null（逐段照度见 actualSegments）
+    actualLux: multiSegment ? null : slot.actual_lux,
     actualMinutes: actual === null ? null : minutesBetween(slot.actual_start, slot.actual_end),
     actualExposure: actual,
+    actualSegments: segments,
+    corrections: slot.corrections || [],
     blocked: !!slot.blocked,
     blockedReason,
     artworks: slot.artworkIds.map((id) => {
@@ -220,6 +284,9 @@ module.exports = {
   loadSlots,
   plannedExposure,
   actualExposure,
+  effectiveSegments,
+  segmentsExposure,
+  correctionDto,
   summarize,
   recomputeBlocked,
   bumpVersion,

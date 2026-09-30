@@ -52,6 +52,36 @@ CREATE TABLE IF NOT EXISTS slot_artworks (
   artwork_id INTEGER NOT NULL REFERENCES artworks(id) ON DELETE CASCADE,
   PRIMARY KEY (slot_id, artwork_id)
 );
+
+-- 实际照度分段：进行中时段可按实际起止 + 多段照度结算；
+-- 已结束时段更正时整段替换。分段须首尾衔接、无重叠且完整覆盖实际区间。
+-- 单照度结算（旧 finish）同样写入一行，页面/API 统一按分段展示。
+CREATE TABLE IF NOT EXISTS slot_segments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  slot_id INTEGER NOT NULL REFERENCES slots(id) ON DELETE CASCADE,
+  seg_index INTEGER NOT NULL,             -- 段次，从 1 开始
+  seg_start TEXT NOT NULL,
+  seg_end TEXT NOT NULL,
+  lux REAL NOT NULL CHECK (lux >= 0),     -- 该段非负照度
+  exposure REAL NOT NULL                  -- 该段曝光 = 实际分钟 × lux
+);
+
+-- 已结束时段的分段更正记录：保存更正前后的起止、照度、曝光与完整分段
+CREATE TABLE IF NOT EXISTS slot_corrections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  slot_id INTEGER NOT NULL REFERENCES slots(id) ON DELETE CASCADE,
+  reason TEXT NOT NULL DEFAULT '',        -- 必填更正理由
+  before_start TEXT, before_end TEXT,
+  before_lux REAL,                        -- 单段时为该段照度，多段时为 NULL
+  before_exposure REAL,
+  before_segments_json TEXT NOT NULL,
+  after_start TEXT, after_end TEXT,
+  after_lux REAL,
+  after_exposure REAL,
+  after_segments_json TEXT NOT NULL,
+  version_after INTEGER NOT NULL,         -- 更正成功后的版本号
+  created_at TEXT NOT NULL
+);
 `;
 
 function openDb() {

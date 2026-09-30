@@ -105,6 +105,51 @@ function renderArtworks() {
 }
 
 // ---------- 渲染：冻结时段（进行中/已结束） ----------
+function segmentRowsHtml(segments) {
+  if (!segments || !segments.length) return '<div class="seg-empty">无分段数据</div>';
+  return `
+    <table class="seg-table">
+      <thead><tr><th class="num">#</th><th>开始</th><th>结束</th><th class="num">分钟</th><th class="num">照度(lux)</th><th class="num">曝光(lux·min)</th></tr></thead>
+      <tbody>
+        ${segments.map((g) => `
+          <tr>
+            <td class="num">${g.index}</td>
+            <td class="mono">${esc(g.start)}</td>
+            <td class="mono">${esc(g.end)}</td>
+            <td class="num">${fmt(g.minutes)}</td>
+            <td class="num">${fmt(g.lux)}</td>
+            <td class="num">${fmt(g.exposure)}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>`;
+}
+
+function correctionsHtml(corrections) {
+  if (!corrections || !corrections.length) return '';
+  const list = corrections.slice().reverse(); // 最新更正在前
+  return `
+    <div class="corr-list">
+      <div class="corr-title">更正记录（${corrections.length}）</div>
+      ${list.map((c) => `
+        <div class="corr-item">
+          <div class="corr-head">
+            <span class="corr-reason">理由：${esc(c.reason)}</span>
+            <span class="corr-meta">${esc(c.createdAt)} · 更正后版本 v${c.version}</span>
+          </div>
+          <div class="corr-flow">
+            <span class="mono">${esc(c.before.start)} ～ ${esc(c.before.end)}</span>
+            ${c.before.lux === null ? `多段（${c.before.segments.length} 段）` : `单一照度 ${fmt(c.before.lux)} lux`}
+            → 曝光 <strong>${fmt(c.before.exposure)}</strong>
+            <span class="corr-arrow">⇒</span>
+            <span class="mono">${esc(c.after.start)} ～ ${esc(c.after.end)}</span>
+            ${c.after.lux === null ? `多段（${c.after.segments.length} 段）` : `单一照度 ${fmt(c.after.lux)} lux`}
+            → 曝光 <strong>${fmt(c.after.exposure)}</strong>
+          </div>
+          <details><summary>查看更正后分段</summary>${segmentRowsHtml(c.after.segments)}</details>
+        </div>`).join('')}
+    </div>`;
+}
+
 function renderFrozen() {
   const tb = $('#frozenTable tbody');
   const rows = state.slots
@@ -114,7 +159,12 @@ function renderFrozen() {
     tb.innerHTML = '<tr class="empty-row"><td colspan="11">暂无进行中或已结束时段</td></tr>';
     return;
   }
-  tb.innerHTML = rows.map((s) => `
+  tb.innerHTML = rows.map((s) => {
+    const luxText = s.actualLux === null
+      ? (s.actualSegments && s.actualSegments.length > 1 ? `多段（${s.actualSegments.length}）` : '—')
+      : fmt(s.actualLux);
+    const hasDetail = s.status === 'finished';
+    return `
     <tr>
       <td>${s.seq}</td>
       <td>${esc(s.hall)}</td>
@@ -127,17 +177,50 @@ function renderFrozen() {
       <td class="mono" style="font-family:var(--mono);font-size:12.5px;white-space:nowrap">
         ${s.actualStart ? `${esc(s.actualStart)}<br>～ ${esc(s.actualEnd)}` : '—（冻结中）'}
       </td>
-      <td class="num">${s.actualLux === null ? '—' : fmt(s.actualLux)}</td>
+      <td class="num">${luxText}</td>
       <td class="num">${s.actualExposure === null ? '—' : fmt(s.actualExposure)}</td>
       <td><div class="art-chips">${s.artworks.map((a) => `<span class="chip">${esc(a.name)}</span>`).join('')}</div></td>
       <td>
-        ${s.status === 'running'
-          ? `<button class="btn btn-sm btn-primary" data-act="finish" data-id="${s.id}">结束补记</button>`
-          : '<span style="color:var(--muted)">已结算</span>'}
+        <div class="row-actions">
+          ${s.status === 'running'
+            ? `<button class="btn btn-sm btn-primary" data-act="finish" data-id="${s.id}">结束补记</button>`
+            : `<button class="btn btn-sm" data-act="toggle-detail" data-id="${s.id}">▸ 分段/更正</button>
+               <button class="btn btn-sm" data-act="correct" data-id="${s.id}">分段更正</button>`}
+        </div>
       </td>
     </tr>
-  `).join('');
+    ${hasDetail ? `
+    <tr class="detail-row hidden" data-detail="${s.id}">
+      <td colspan="11">
+        <div class="seg-detail">
+          <div class="seg-block">
+            <div class="corr-title">实际照度分段（合计 ${fmt(s.actualExposure)} lux·min）</div>
+            ${segmentRowsHtml(s.actualSegments)}
+          </div>
+          ${correctionsHtml(s.corrections)}
+        </div>
+      </td>
+    </tr>` : ''}
+  `;
+  }).join('');
 }
+
+// 展开 / 收起分段详情
+function setDetailOpen(id, open) {
+  const detail = document.querySelector(`tr[data-detail="${id}"]`);
+  const btn = document.querySelector(`button[data-act="toggle-detail"][data-id="${id}"]`);
+  if (!detail) return;
+  detail.classList.toggle('hidden', !open);
+  if (btn) btn.textContent = open ? '▾ 收起' : '▸ 分段/更正';
+}
+$('#frozenTable').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-act="toggle-detail"]');
+  if (!btn) return;
+  const id = btn.dataset.id;
+  const detail = document.querySelector(`tr[data-detail="${id}"]`);
+  if (!detail) return;
+  setDetailOpen(id, detail.classList.contains('hidden'));
+});
 
 // ---------- 渲染：未开始草稿 ----------
 function renderDraft() {
@@ -299,39 +382,178 @@ async function startSlot(id) {
   }
 }
 
-// ---------- 结束补记 ----------
+// ---------- 结束补记（单照度 / 多段照度） ----------
+let finishMode = 'single';
+let fnSegRows = [];
+
+// 分段行：每段 开始/结束/照度
+function segRowHtml(row) {
+  return `
+    <div class="seg-row">
+      <span class="seg-idx">第 <span class="seg-idx-n">${row.idx}</span> 段</span>
+      <input type="datetime-local" class="mono" data-k="start" value="${esc(row.start || '')}" title="段开始" />
+      <span class="seg-tilde">～</span>
+      <input type="datetime-local" class="mono" data-k="end" value="${esc(row.end || '')}" title="段结束" />
+      <input type="number" min="0" step="1" data-k="lux" value="${esc(row.lux ?? '')}" placeholder="lux" title="段照度（非负）" />
+      <span class="seg-expo"></span>
+      <button type="button" class="btn btn-sm btn-danger" data-k="del">删</button>
+    </div>`;
+}
+
+function rowIndex(container, div) {
+  return Array.from(container.querySelectorAll('.seg-row')).indexOf(div);
+}
+function syncSegRow(container, rows, div) {
+  const i = rowIndex(container, div);
+  const row = rows[i];
+  if (!row) return;
+  div.querySelectorAll('[data-k]').forEach((el) => {
+    if (el.dataset.k === 'del') return;
+    if (el.dataset.k === 'lux') row.lux = el.value === '' ? null : Number(el.value);
+    else row[el.dataset.k] = el.value;
+  });
+}
+function paintSegExpo(container, rows) {
+  let total = 0, ok = rows.length > 0;
+  container.querySelectorAll('.seg-row').forEach((div, i) => {
+    const r = rows[i];
+    const m = r ? minutes(r.start, r.end) : null;
+    const node = div.querySelector('.seg-expo');
+    if (r && m !== null && m > 0 && Number.isFinite(r.lux) && r.lux >= 0) {
+      const v = Math.round(m * r.lux);
+      total += v;
+      if (node) node.textContent = `${m}分×${r.lux}=${fmt(v)}`;
+    } else {
+      ok = false;
+      if (node) node.textContent = '';
+    }
+  });
+  return { total, ok };
+}
+
+function renderFnSegments() {
+  const el = $('#fn_segments');
+  el.innerHTML = fnSegRows.map((r, i) => segRowHtml({ ...r, idx: i + 1 })).join('');
+  updateFinishPreview();
+}
+$('#fn_segments').addEventListener('change', (e) => {
+  const div = e.target.closest('.seg-row');
+  if (div) { syncSegRow($('#fn_segments'), fnSegRows, div); updateFinishPreview(); }
+});
+$('#fn_segments').addEventListener('click', (e) => {
+  if (!e.target.closest('[data-k="del"]')) return;
+  const div = e.target.closest('.seg-row');
+  const i = rowIndex($('#fn_segments'), div);
+  if (i >= 0) fnSegRows.splice(i, 1);
+  renderFnSegments();
+});
+$('#fn_addSeg').addEventListener('click', () => {
+  const prev = fnSegRows[fnSegRows.length - 1];
+  fnSegRows.push({
+    start: prev ? prev.end : $('#fn_actualStart').value,
+    end: prev ? '' : $('#fn_actualEnd').value,
+    lux: 0,
+  });
+  if (fnSegRows.length === 1) fnSegRows[0].end = $('#fn_actualEnd').value;
+  renderFnSegments();
+});
+$('#fn_actualStart').addEventListener('change', () => {
+  if (fnSegRows.length) { fnSegRows[0].start = $('#fn_actualStart').value; renderFnSegments(); }
+});
+$('#fn_actualEnd').addEventListener('change', () => {
+  if (fnSegRows.length) { fnSegRows[fnSegRows.length - 1].end = $('#fn_actualEnd').value; renderFnSegments(); }
+});
+
+document.querySelectorAll('input[name="fn_mode"]').forEach((radio) => {
+  radio.addEventListener('change', () => {
+    finishMode = document.querySelector('input[name="fn_mode"]:checked').value;
+    $('#fn_single').classList.toggle('hidden', finishMode !== 'single');
+    $('#fn_multi').classList.toggle('hidden', finishMode !== 'multi');
+    // 首次切到多段模式：用实际起止预填一整段，照度沿用单一照度输入框
+    if (finishMode === 'multi' && fnSegRows.length === 0) {
+      fnSegRows.push({
+        start: $('#fn_actualStart').value,
+        end: $('#fn_actualEnd').value,
+        lux: Number($('#fn_lux').value) || 0,
+      });
+      renderFnSegments();
+    }
+    updateFinishPreview();
+  });
+});
+
 $('#frozenTable').addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-act="finish"]');
   if (!btn) return;
   const id = Number(btn.dataset.id);
   const slot = state.slots.find((s) => s.id === id);
   finishingSlotId = id;
+  finishMode = 'single';
+  document.querySelector('input[name="fn_mode"][value="single"]').checked = true;
+  $('#fn_single').classList.remove('hidden');
+  $('#fn_multi').classList.add('hidden');
   $('#fn_start').value = slot.plannedStart;
   $('#fn_end').value = slot.plannedEnd;
   $('#fn_lux').value = slot.plannedLux;
+  $('#fn_actualStart').value = slot.plannedStart;
+  $('#fn_actualEnd').value = slot.plannedEnd;
+  fnSegRows = [];
+  renderFnSegments(); // 初始空，点保存时单段自动生成
   $('#fn_error').classList.add('hidden');
   updateFinishPreview();
   $('#finishModal').classList.remove('hidden');
 });
 function updateFinishPreview() {
-  const mins = minutes($('#fn_start').value, $('#fn_end').value);
-  const lux = Number($('#fn_lux').value);
-  const el = $('#fn_preview');
-  if (mins !== null && mins > 0 && lux >= 0) el.textContent = fmt(Math.round(mins * lux));
-  else el.textContent = '–';
+  if (finishMode === 'single') {
+    const mins = minutes($('#fn_start').value, $('#fn_end').value);
+    const lux = Number($('#fn_lux').value);
+    const el = $('#fn_preview');
+    if (mins !== null && mins > 0 && lux >= 0) el.textContent = fmt(Math.round(mins * lux));
+    else el.textContent = '–';
+    return;
+  }
+  // 多段：按 Σ 分钟×照度
+  const ranges = $('#fn_actualStart').value && $('#fn_actualEnd').value
+    ? minutes($('#fn_actualStart').value, $('#fn_actualEnd').value) : null;
+  const { total, ok } = paintSegExpo($('#fn_segments'), fnSegRows);
+  if (ranges !== null && ranges <= 0) $('#fn_multiPreview').textContent = '–';
+  else $('#fn_multiPreview').textContent = ok && ranges > 0 ? fmt(total) : '–';
 }
 ['fn_start', 'fn_end', 'fn_lux'].forEach((id) => $('#' + id).addEventListener('input', updateFinishPreview));
 
+function finishErrorsToText(payload) {
+  const lines = [];
+  if (payload && payload.error && payload.error.message) lines.push(payload.error.message);
+  (payload && payload.errors || []).forEach((x) => {
+    if (x.message) lines.push(`• ${x.message}`);
+  });
+  return lines.join('\n');
+}
+
 $('#fn_save').addEventListener('click', async () => {
   try {
-    const next = await api(`/api/slots/${finishingSlotId}/finish`, {
-      method: 'POST',
-      body: {
+    let next, path, body;
+    if (finishMode === 'single') {
+      path = `/api/slots/${finishingSlotId}/finish`;
+      body = {
         actualStart: $('#fn_start').value,
         actualEnd: $('#fn_end').value,
         actualLux: Number($('#fn_lux').value),
-      },
-    });
+      };
+    } else {
+      path = `/api/slots/${finishingSlotId}/settle`;
+      document.querySelectorAll('#fn_segments .seg-row').forEach((div) => syncSegRow($('#fn_segments'), fnSegRows, div));
+      const segs = fnSegRows.map((r) => ({
+        start: r.start, end: r.end, lux: r.lux === null || r.lux === undefined ? null : Number(r.lux),
+      }));
+      body = {
+        version: state.version,
+        actualStart: $('#fn_actualStart').value,
+        actualEnd: $('#fn_actualEnd').value,
+        segments: segs,
+      };
+    }
+    next = await api(path, { method: 'POST', body });
     $('#finishModal').classList.add('hidden');
     applyNewState(next);
     if (next.blockedAfterFinish && next.blockedAfterFinish.length) {
@@ -345,8 +567,114 @@ $('#fn_save').addEventListener('click', async () => {
       toast('success', `已结束并补记，实际曝光 ${fmt(next.justFinishedExposure)} lux·min 已替换预占`);
     }
   } catch (err) {
-    $('#fn_error').textContent = err.message;
+    if (err.status === 409 && err.payload && err.payload.state) {
+      $('#finishModal').classList.add('hidden');
+      applyNewState(err.payload.state);
+      toast('error', `${err.message}\n页面已刷新为最新预算，请重新结算`);
+      return;
+    }
+    $('#fn_error').textContent = finishMode === 'multi' ? finishErrorsToText(err.payload || { error: { message: err.message } }) : err.message;
     $('#fn_error').classList.remove('hidden');
+  }
+});
+
+// ---------- 已结束时段分段更正 ----------
+let correctingSlotId = null;
+let crSegRows = [];
+let crBeforeExposure = 0;
+
+function renderCrSegments() {
+  const el = $('#cr_segments');
+  el.innerHTML = crSegRows.map((r, i) => segRowHtml({ ...r, idx: i + 1 })).join('');
+  updateCorrectPreview();
+}
+$('#cr_segments').addEventListener('change', (e) => {
+  const div = e.target.closest('.seg-row');
+  if (div) { syncSegRow($('#cr_segments'), crSegRows, div); updateCorrectPreview(); }
+});
+$('#cr_segments').addEventListener('click', (e) => {
+  if (!e.target.closest('[data-k="del"]')) return;
+  const div = e.target.closest('.seg-row');
+  const i = rowIndex($('#cr_segments'), div);
+  if (i >= 0) crSegRows.splice(i, 1);
+  renderCrSegments();
+});
+$('#cr_addSeg').addEventListener('click', () => {
+  const slot = state.slots.find((s) => s.id === correctingSlotId);
+  const prev = crSegRows[crSegRows.length - 1];
+  crSegRows.push({
+    start: prev ? prev.end : (slot ? slot.actualStart : ''),
+    end: slot && !prev ? slot.actualEnd : '',
+    lux: 0,
+  });
+  renderCrSegments();
+});
+
+$('#frozenTable').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-act="correct"]');
+  if (!btn) return;
+  const id = Number(btn.dataset.id);
+  const slot = state.slots.find((s) => s.id === id);
+  if (!slot) return;
+  correctingSlotId = id;
+  $('#cr_slot').textContent = `#${slot.seq} ${slot.hall} · ${slot.artworks.map((a) => a.name).join('、')}`;
+  $('#cr_range').textContent = `${slot.actualStart} ～ ${slot.actualEnd}（${slot.actualMinutes} 分钟）`;
+  $('#cr_reason').value = '';
+  $('#cr_error').classList.add('hidden');
+  crBeforeExposure = slot.actualExposure || 0;
+  crSegRows = (slot.actualSegments && slot.actualSegments.length
+    ? slot.actualSegments
+    : [{ index: 1, start: slot.actualStart, end: slot.actualEnd, lux: slot.actualLux }]
+  ).map((g) => ({ start: g.start, end: g.end, lux: g.lux }));
+  renderCrSegments();
+  $('#correctModal').classList.remove('hidden');
+});
+
+function updateCorrectPreview() {
+  const { total, ok } = paintSegExpo($('#cr_segments'), crSegRows);
+  $('#cr_preview').textContent = ok ? fmt(total) : '–';
+  const diff = total - crBeforeExposure;
+  const diffEl = $('#cr_diff');
+  if (ok) {
+    diffEl.textContent = diff === 0 ? '总量不变　' : (diff > 0 ? `较原总量 +${fmt(diff)}　` : `较原总量 ${fmt(diff)}　`);
+    diffEl.style.color = diff > 0 ? 'var(--danger)' : (diff < 0 ? 'var(--ok)' : 'var(--muted)');
+  } else {
+    diffEl.textContent = '';
+  }
+}
+
+$('#cr_save').addEventListener('click', async () => {
+  document.querySelectorAll('#cr_segments .seg-row').forEach((div) => syncSegRow($('#cr_segments'), crSegRows, div));
+  const reason = $('#cr_reason').value.trim();
+  if (!reason) {
+    $('#cr_error').textContent = '请填写更正理由';
+    $('#cr_error').classList.remove('hidden');
+    return;
+  }
+  try {
+    const next = await api(`/api/slots/${correctingSlotId}/correct`, {
+      method: 'POST',
+      body: {
+        version: state.version,
+        reason,
+        segments: crSegRows.map((r) => ({ start: r.start, end: r.end, lux: r.lux === null ? null : Number(r.lux) })),
+      },
+    });
+    $('#correctModal').classList.add('hidden');
+    applyNewState(next);
+    setDetailOpen(correctingSlotId, true);
+    const c = next.correction;
+    toast('success',
+      `分段更正成功：曝光 ${fmt(c.beforeExposure)} → ${fmt(c.afterExposure)} lux·min（新总量替换旧总量，不重复累计），作品已用量与后续不可启动核算已同步重算`);
+  } catch (err) {
+    if (err.status === 409 && err.payload && err.payload.state) {
+      $('#correctModal').classList.add('hidden');
+      applyNewState(err.payload.state);
+      toast('error', `${err.message}\n页面已刷新为最新预算，请重新更正`);
+      return;
+    }
+    $('#cr_error').textContent = finishErrorsToText(err.payload || { error: { message: err.message } });
+    $('#cr_error').classList.remove('hidden');
   }
 });
 
