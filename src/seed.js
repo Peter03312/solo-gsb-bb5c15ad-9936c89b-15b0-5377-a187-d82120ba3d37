@@ -29,13 +29,34 @@ function seed(db) {
   const link = db.prepare('INSERT INTO slot_artworks (slot_id, artwork_id) VALUES (?, ?)');
   const addLinks = (slotId, ids) => ids.forEach((aid) => link.run(slotId, aid));
 
-  // 1. 已结束时段（实际曝光已补记并替换预占）：160 分钟 * 140 = 22400
+  // 1. 已结束时段（分段照度结算，曝光已补记并替换预占）：
+  //    09:10–10:30 为 120 lux（80 分钟 = 9600），10:30–11:50 为 160 lux（80 分钟 = 12800），合计 22400
+  const s1Segs = [
+    { start: '2026-09-29T09:10', end: '2026-09-29T10:30', lux: 120, minutes: 80, exposure: 9600 },
+    { start: '2026-09-29T10:30', end: '2026-09-29T11:50', lux: 160, minutes: 80, exposure: 12800 },
+  ];
   const s1 = insSlot.run({
     hall: '一号厅', seq: 1, status: 'finished',
     planned_start: '2026-09-29T09:00', planned_end: '2026-09-29T12:00', planned_lux: 150,
-    actual_start: '2026-09-29T09:10', actual_end: '2026-09-29T11:50', actual_lux: 140,
+    actual_start: '2026-09-29T09:10', actual_end: '2026-09-29T11:50', actual_lux: null,
     actual_exposure: 22400,
   }).lastInsertRowid;
+  db.prepare('UPDATE slots SET actual_segments = ? WHERE id = ?').run(JSON.stringify(s1Segs), s1);
+  // 演示一条更正记录：最初以单一照度 140 lux 结算（22400），后改为分段记录（总量不变）
+  db.prepare(`
+    INSERT INTO slot_corrections (
+      slot_id, reason, seq_no,
+      before_start, before_end, before_lux, before_minutes, before_exposure, before_segments,
+      after_start, after_end, after_lux, after_minutes, after_exposure, after_segments,
+      created_at
+    ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    s1, '现场照度计记录补录：上午布光 120 lux，巡场后调亮至 160 lux，按实测分段登记',
+    '2026-09-29T09:10', '2026-09-29T11:50', 140, 160, 22400,
+    JSON.stringify([{ start: '2026-09-29T09:10', end: '2026-09-29T11:50', lux: 140, minutes: 160, exposure: 22400 }]),
+    '2026-09-29T09:10', '2026-09-29T11:50', null, 160, 22400,
+    JSON.stringify(s1Segs), '2026-09-29T12:05',
+  );
   addLinks(s1, [artIds.w1]);
 
   // 2. 进行中时段：已开始，原排期冻结、预占保留（240 分钟 * 200 = 48000/件）

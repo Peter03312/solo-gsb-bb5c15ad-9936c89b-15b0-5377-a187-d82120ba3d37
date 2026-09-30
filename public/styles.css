@@ -161,12 +161,65 @@ td.cell-expo { font-family: var(--mono); font-size: 12.5px; white-space: nowrap;
   padding: 22px 24px;
   box-shadow: 0 18px 50px rgba(0,0,0,.25);
 }
+.modal-wide { width: 720px; max-height: 88vh; overflow-y: auto; }
 .modal h3 { font-size: 16px; margin-bottom: 16px; }
 .form-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .form-row label { width: 170px; color: var(--muted); font-size: 13px; flex-shrink: 0; }
 .form-row input { flex: 1; min-width: 0; }
 .form-row.computed { justify-content: flex-end; font-size: 13px; color: var(--muted); }
 .form-row.computed strong { color: var(--primary); font-family: var(--mono); font-size: 15px; }
+
+/* 多段照度编辑器 */
+.seg-mode { display: flex; gap: 18px; margin-bottom: 14px; font-size: 13px; }
+.seg-mode label { display: flex; align-items: center; gap: 5px; color: var(--text); cursor: pointer; }
+.seg-editor-head {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  font-size: 12.5px; color: var(--muted); margin: 6px 0 8px;
+}
+.seg-row {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+  background: #f8fafc; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+}
+.seg-row .seg-idx {
+  width: 22px; height: 22px; border-radius: 50%; background: var(--primary); color: #fff;
+  font-size: 12px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.seg-row input { padding: 5px 8px; font-size: 12.5px; }
+.seg-row input.seg-lux { width: 90px; }
+.seg-row .seg-mins { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; min-width: 52px; text-align: right; }
+.seg-row .seg-del { border: none; background: none; color: var(--danger); cursor: pointer; font-size: 16px; padding: 0 4px; }
+.corr-range {
+  background: #f8fafc; border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 12px; font-size: 12.5px; color: var(--muted); margin-bottom: 12px;
+}
+.corr-range strong { color: var(--text); font-family: var(--mono); }
+.corr-reason-row { align-items: flex-start; }
+.corr-reason-row label { padding-top: 7px; }
+.corr-reason-row textarea {
+  flex: 1; min-width: 0; font: inherit; padding: 6px 9px;
+  border: 1px solid #ccd5e0; border-radius: 6px; resize: vertical;
+}
+
+/* 分段明细 / 更正记录展开行 */
+.detail-row td { background: #fbfcfe; padding: 0; }
+.detail-inner { padding: 10px 16px 12px; }
+.detail-block { margin-bottom: 8px; }
+.detail-block:last-child { margin-bottom: 0; }
+.detail-title { font-size: 12px; color: var(--muted); margin-bottom: 4px; font-weight: 600; }
+.seg-pill {
+  display: inline-block; background: #eef3f9; border: 1px solid #d4e1ee; color: var(--primary);
+  border-radius: 8px; padding: 3px 10px; margin: 0 6px 6px 0; font-size: 12px; font-family: var(--mono);
+}
+.seg-pill b { font-weight: 700; }
+.corr-item {
+  border-left: 3px solid #ecd9a8; background: var(--warn-bg);
+  border-radius: 0 8px 8px 0; padding: 7px 12px; margin-bottom: 6px; font-size: 12.5px;
+}
+.corr-item .corr-head { display: flex; gap: 10px; flex-wrap: wrap; color: var(--warn); font-weight: 600; margin-bottom: 3px; }
+.corr-item .corr-reason { color: var(--text); margin-bottom: 3px; }
+.corr-item .corr-nums { font-family: var(--mono); color: var(--muted); font-size: 12px; }
+.corr-item .corr-nums .arrow { color: var(--warn); }
+.multi-lux-hint { display: block; font-size: 10.5px; color: var(--muted); font-weight: 400; margin-top: 1px; }
 .form-error {
   background: var(--danger-bg); border: 1px solid #ecc4be;
   color: var(--danger); padding: 9px 12px; border-radius: 8px;

@@ -176,6 +176,197 @@ const getState = async () => (await call('GET', '/api/state')).json;
   r = await call('DELETE', `/api/artworks/${newId}`, { version: r.json.version });
   ok(r.status === 200 && !r.json.artworks.some((a) => a.id === newId), '未被引用的作品可删除');
 
+  console.log('# 12. 多段照度结算：分段完整性校验（衔接/覆盖/非负）');
+  st = await getState();
+  // 独立演示作品，避免与前面步骤的数据耦合
+  r = await call('POST', '/api/artworks', { version: st.version, name: '分段测试品', limit: 200000, existing: 0 });
+  ok(r.status === 200, '分段测试作品已创建');
+  const segArtId = r.json.artworks.at(-1).id;
+  let v = r.json.version;
+  r = await call('POST', '/api/schedule', { version: v, slots: [
+    { cid: 'seg-a', hall: '四号厅', start: '2026-11-10T09:00', end: '2026-11-10T11:00', lux: 100, artworkIds: [segArtId] },
+    { cid: 'seg-b', hall: '四号厅', start: '2026-11-10T14:00', end: '2026-11-10T16:00', lux: 100, artworkIds: [segArtId] },
+  ]});
+  ok(r.status === 200, '两个测试时段已排期');
+  v = r.json.version;
+  const segA = r.json.slots.find((s) => s.plannedStart.startsWith('2026-11-10T09'));
+  const segB = r.json.slots.find((s) => s.plannedStart.startsWith('2026-11-10T14'));
+  r = await call('POST', `/api/slots/${segA.id}/start`);
+  ok(r.status === 200, '测试时段 A 已启动');
+  v = r.json.version;
+
+  const settlePath = `/api/slots/${segA.id}/settle`;
+  // 缺口：两段之间空 10 分钟
+  r = await call('POST', settlePath, { version: v, actualStart: '2026-11-10T09:00', actualEnd: '2026-11-10T11:00', segments: [
+    { start: '2026-11-10T09:00', end: '2026-11-10T10:00', lux: 100 },
+    { start: '2026-11-10T10:10', end: '2026-11-10T11:00', lux: 200 },
+  ]});
+  ok(r.status === 422 && r.json.error.code === 'SEGMENTS_INVALID' && r.json.segmentErrors.length >= 1,
+     '分段有缺口被整批拒绝');
+  // 重叠
+  r = await call('POST', settlePath, { version: v, actualStart: '2026-11-10T09:00', actualEnd: '2026-11-10T11:00', segments: [
+    { start: '2026-11-10T09:00', end: '2026-11-10T10:30', lux: 100 },
+    { start: '2026-11-10T10:00', end: '2026-11-10T11:00', lux: 200 },
+  ]});
+  ok(r.status === 422 && r.json.segmentErrors.some((m) => m.includes('衔接')), '分段重叠被拒绝');
+  // 未覆盖到区间末尾
+  r = await call('POST', settlePath, { version: v, actualStart: '2026-11-10T09:00', actualEnd: '2026-11-10T11:00', segments: [
+    { start: '2026-11-10T09:00', end: '2026-11-10T10:30', lux: 100 },
+  ]});
+  ok(r.status === 422 && r.json.segmentErrors.some((m) => m.includes('完整覆盖')), '分段未完整覆盖实际区间被拒绝');
+  // 负照度
+  r = await call('POST', settlePath, { version: v, actualStart: '2026-11-10T09:00', actualEnd: '2026-11-10T11:00', segments: [
+    { start: '2026-11-10T09:00', end: '2026-11-10T11:00', lux: -1 },
+  ]});
+  ok(r.status === 422, '分段负照度被拒绝');
+  // 空数组
+  r = await call('POST', settlePath, { version: v, actualStart: '2026-11-10T09:00', actualEnd: '2026-11-10T11:00', segments: [] });
+  ok(r.status === 422, '空分段被拒绝');
+  // 零长度中间段（末段恰好等于区间结束，也不能漏网）
+  r = await call('POST', settlePath, { version: v, actualStart: '2026-11-10T09:00', actualEnd: '2026-11-10T11:00', segments: [
+    { start: '2026-11-10T09:00', end: '2026-11-10T10:00', lux: 100 },
+    { start: '2026-11-10T10:00', end: '2026-11-10T10:00', lux: 100 },
+    { start: '2026-11-10T10:00', end: '2026-11-10T11:00', lux: 100 },
+  ]});
+  ok(r.status === 422 && r.json.segmentErrors.some((m) => m.includes('结束必须晚于开始')), '零长度中间段被拒绝');
+  // 末段被包含在前段内（前段已到区间结束）→ 重叠
+  r = await call('POST', settlePath, { version: v, actualStart: '2026-11-10T09:00', actualEnd: '2026-11-10T11:00', segments: [
+    { start: '2026-11-10T09:00', end: '2026-11-10T11:00', lux: 100 },
+    { start: '2026-11-10T10:00', end: '2026-11-10T11:00', lux: 200 },
+  ]});
+  ok(r.status === 422 && r.json.segmentErrors.some((m) => m.includes('重叠')), '末段与前段重叠（区间被超过）被拒绝');
+  // 乱序提交（第 2 段在第 1 段之前）→ 缺口
+  r = await call('POST', settlePath, { version: v, actualStart: '2026-11-10T09:00', actualEnd: '2026-11-10T11:00', segments: [
+    { start: '2026-11-10T10:00', end: '2026-11-10T11:00', lux: 200 },
+    { start: '2026-11-10T09:00', end: '2026-11-10T10:00', lux: 100 },
+  ]});
+  ok(r.status === 422 && r.json.segmentErrors.some((m) => m.includes('缺口') || m.includes('覆盖')), '分段未按时间顺序提交被拒绝');
+  st = await getState();
+  ok(st.version === v, '分段拒绝不改变结算与版本');
+
+  // 过期版本 → 409 + 最新预算
+  r = await call('POST', settlePath, { version: 1, actualStart: '2026-11-10T09:00', actualEnd: '2026-11-10T11:00', segments: [
+    { start: '2026-11-10T09:00', end: '2026-11-10T11:00', lux: 100 },
+  ]});
+  ok(r.status === 409 && r.json.error.code === 'VERSION_STALE' && r.json.state.version === v,
+     '多段结算过期版本返回 409 与最新预算');
+
+  console.log('# 13. 多段结算成功：Σ(分钟×照度)，返回分段与总量');
+  // 60*120 + 30*200 + 30*0 = 7200 + 6000 + 0 = 13200
+  r = await call('POST', settlePath, { version: v, actualStart: '2026-11-10T09:00', actualEnd: '2026-11-10T11:00', segments: [
+    { start: '2026-11-10T09:00', end: '2026-11-10T10:00', lux: 120 },
+    { start: '2026-11-10T10:00', end: '2026-11-10T10:30', lux: 200 },
+    { start: '2026-11-10T10:30', end: '2026-11-10T11:00', lux: 0 },
+  ]});
+  ok(r.status === 200 && r.json.justFinishedExposure === 13200 && r.json.justFinishedMinutes === 120
+     && r.json.justFinishedSegments.length === 3,
+     `多段结算总量 ${r.json.justFinishedExposure}（应 13200）、时长 ${r.json.justFinishedMinutes} 分、3 段`);
+  v = r.json.version;
+  const settledA = r.json.slots.find((s) => s.id === segA.id);
+  ok(settledA.status === 'finished' && settledA.actualLux === null && settledA.segmentCount === 3
+     && settledA.actualSegments[2].exposure === 0,
+     '多段结算后状态 finished、无单一照度、含 0 照度段');
+  const segArt = r.json.artworks.find((a) => a.id === segArtId);
+  ok(segArt.used === 13200, `作品已用 = 分段曝光之和 ${segArt.used}`);
+  // 已结束时段不能再 settle
+  r = await call('POST', settlePath, { version: v, actualStart: '2026-11-10T09:00', actualEnd: '2026-11-10T11:00', segments: [
+    { start: '2026-11-10T09:00', end: '2026-11-10T11:00', lux: 100 },
+  ]});
+  ok(r.status === 422 && r.json.error.code === 'NOT_RUNNING', '已结束时段不能再次结算');
+
+  console.log('# 14. 已结束时段分段更正：理由/覆盖校验/替换语义/记录');
+  const correctPath = `/api/slots/${segA.id}/correct`;
+  // 缺理由
+  r = await call('POST', correctPath, { version: v, segments: [
+    { start: '2026-11-10T09:00', end: '2026-11-10T11:00', lux: 110 },
+  ]});
+  ok(r.status === 422 && r.json.error.code === 'VALIDATION', '无理由更正被拒绝');
+  // 分段不覆盖原实际区间
+  r = await call('POST', correctPath, { version: v, reason: 'x', segments: [
+    { start: '2026-11-10T09:00', end: '2026-11-10T10:00', lux: 110 },
+  ]});
+  ok(r.status === 422 && r.json.error.code === 'SEGMENTS_INVALID', '更正分段未覆盖原区间被拒绝');
+  // 过期版本
+  r = await call('POST', correctPath, { version: 1, reason: 'x', segments: [
+    { start: '2026-11-10T09:00', end: '2026-11-10T11:00', lux: 110 },
+  ]});
+  ok(r.status === 409 && r.json.state.version === v, '更正过期版本返回 409 与最新预算');
+  st = await getState();
+  ok(st.version === v && st.slots.find((s) => s.id === segA.id).actualExposure === 13200, '更正失败不改结算与版本');
+
+  // 合法更正：改为两段 60*110 + 60*130 = 6600 + 7800 = 14400（替换 13200，不累加）
+  r = await call('POST', correctPath, { version: v, reason: '照度计复核：开场调暗、随后恢复', segments: [
+    { start: '2026-11-10T09:00', end: '2026-11-10T10:00', lux: 110 },
+    { start: '2026-11-10T10:00', end: '2026-11-10T11:00', lux: 130 },
+  ]});
+  ok(r.status === 200 && r.json.correction.seqNo === 1
+     && r.json.correction.before.exposure === 13200 && r.json.correction.after.exposure === 14400
+     && r.json.correction.before.segments.length === 3 && r.json.correction.after.segments.length === 2,
+     '更正记录含更正前后曝光(13200→14400)、时间与分段数');
+  v = r.json.version;
+  const afterArt = r.json.artworks.find((a) => a.id === segArtId);
+  ok(afterArt.used === 14400, `新总量替换旧总量、不重复累计：已用 ${afterArt.used}（应 14400）`);
+  const afterSlot = r.json.slots.find((s) => s.id === segA.id);
+  ok(afterSlot.actualExposure === 14400 && afterSlot.corrections.length === 1
+     && afterSlot.corrections[0].reason.includes('照度计复核')
+     && afterSlot.corrections[0].before.minutes === 120 && afterSlot.corrections[0].after.minutes === 120,
+     '时段 DTO 携带更正记录（理由与前后时间）');
+
+  console.log('# 15. 更正影响后续时段不可启动状态与缺口，再更正恢复');
+  // segB（14:00–16:00，120 分钟）先启动前应可启动；当前已用 14400，上限 200000 充足 → 启动它
+  r = await call('POST', `/api/slots/${segB.id}/start`);
+  ok(r.status === 200, '测试时段 B 可启动');
+  v = r.json.version;
+  // 把 segA 更正为 199000：120 分钟单一照度，超出后 B 已在进行中（不标 blocked），
+  // 这里改为验证未开始时段：再排一个 segC
+  r = await call('POST', '/api/schedule', { version: v, slots: [
+    { cid: 'seg-c', hall: '五号厅', start: '2026-11-11T09:00', end: '2026-11-11T10:00', lux: 100, artworkIds: [segArtId] },
+  ]});
+  ok(r.status === 200, '测试时段 C 已排期（60*100=6000）');
+  v = r.json.version;
+  const segC = r.json.slots.find((s) => s.plannedStart.startsWith('2026-11-11'));
+  // 已用 14400（A）+ B 进行中预占 12000 = 26400；C 需 6000 → 当前可启动
+  ok(!segC.blocked, '更正前 C 可启动');
+
+  // 更正 A：120 分钟 * 1900 = 228000？上限 200000，会导致 B+C 全部超量；
+  // 但 B 进行中预占固定 12000。C 判定时基线 = 1900*120 + 12000 = 240000 > 200000 → 缺口
+  r = await call('POST', correctPath, { version: v, reason: '发现长期超照度，补登实测', segments: [
+    { start: '2026-11-10T09:00', end: '2026-11-10T11:00', lux: 1900 },
+  ]});
+  ok(r.status === 200 && r.json.correction.seqNo === 2, '第二次更正成功（seqNo=2）');
+  v = r.json.version;
+  const blockedC = r.json.blockedAfterFinish.find((s) => s.id === segC.id);
+  ok(!!blockedC && blockedC.blockedReason.gaps[0].artworkId === segArtId,
+     `更正后后续未开始时段被标不可启动，缺口 ${blockedC?.blockedReason.gaps[0].gap}`);
+  const artOver = r.json.artworks.find((a) => a.id === segArtId);
+  ok(artOver.used === 228000 && artOver.over === true, '更正后作品已用量同步重算为 228000');
+  // 启动被拦截
+  r = await call('POST', `/api/slots/${segC.id}/start`);
+  ok(r.status === 422 && r.json.error.code === 'BLOCKED', '更正致缺口后 C 禁止启动');
+
+  // 再更正回低照度：缺口消除
+  r = await call('POST', correctPath, { version: v, reason: '复核为照度记录仪故障，恢复实测值', segments: [
+    { start: '2026-11-10T09:00', end: '2026-11-10T10:00', lux: 110 },
+    { start: '2026-11-10T10:00', end: '2026-11-10T11:00', lux: 130 },
+  ]});
+  ok(r.status === 200 && r.json.correction.seqNo === 3
+     && r.json.correction.before.exposure === 228000 && r.json.correction.after.exposure === 14400
+     && r.json.blockedAfterFinish.length === 0,
+     '第三次更正 228000→14400，缺口消除、后续时段恢复可启动');
+  st = await getState();
+  const restoredC = st.slots.find((s) => s.id === segC.id);
+  ok(!restoredC.blocked && st.artworks.find((a) => a.id === segArtId).used === 14400,
+     '恢复更正后 C 可启动、作品已用量回到 14400、更正记录共 3 条');
+  ok(st.slots.find((s) => s.id === segA.id).corrections.length === 3, '更正历史累计 3 条且只增不改');
+
+  console.log('# 16. 演示数据自带分段与更正记录');
+  st = await getState();
+  ok(st.slots.find((s) => s.id === 1).segmentCount === 2
+     && st.slots.find((s) => s.id === 1).actualLux === null
+     && st.slots.find((s) => s.id === 1).corrections.length >= 1
+     && st.slots.find((s) => s.id === 1).actualExposure === 22400,
+     '初始已结束时段为多段结算（2 段、合计 22400）并带更正记录');
+
   console.log(`\n结果：${pass} 通过，${fail} 失败`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

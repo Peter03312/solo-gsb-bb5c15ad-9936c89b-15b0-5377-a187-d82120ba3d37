@@ -88,11 +88,14 @@ const server = http.createServer(async (req, res) => {
     }
 
     // 时段生命周期
-    const mSlot = pathname.match(/^\/api\/slots\/(\d+)\/(start|finish)$/);
+    const mSlot = pathname.match(/^\/api\/slots\/(\d+)\/(start|finish|settle|correct)$/);
     if (mSlot && req.method === 'POST') {
       const id = H.parseId(mSlot[1]);
+      if (id === null) return sendJson(res, 404, { error: { code: 'NOT_FOUND', message: '时段不存在' } });
       if (mSlot[2] === 'start') return sendJson(res, 200, H.startSlot(db, id));
-      return sendJson(res, 200, H.finishSlot(db, id, body || {}));
+      if (mSlot[2] === 'finish') return sendJson(res, 200, H.finishSlot(db, id, body || {}));
+      if (mSlot[2] === 'settle') return sendJson(res, 200, H.settleSlotSegments(db, id, body || {}));
+      return sendJson(res, 200, H.correctSlot(db, id, body || {}));
     }
 
     sendJson(res, 404, { error: { code: 'NOT_FOUND', message: '接口不存在' } });
@@ -104,6 +107,7 @@ const server = http.createServer(async (req, res) => {
       if (err.conflicts) payload.conflicts = err.conflicts;
       if (err.budgetExceeded) payload.budgetExceeded = err.budgetExceeded;
       if (err.blockedReason) payload.blockedReason = err.blockedReason;
+      if (err.segmentErrors) payload.segmentErrors = err.segmentErrors;
       return sendJson(res, err.status, payload);
     }
     console.error('[server]', err);
